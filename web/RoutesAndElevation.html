@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SierraMaps - Elevation Profile</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { margin:0; font-family: Arial, sans-serif; }
+    h1 {
+      text-align: center;
+      background-color: #f0f0f0;
+      padding: 15px;
+      margin: 0;
+    }
+    h1 a {
+      color: #007bff;
+      text-decoration: none;
+    }
+    h1 a:hover {
+      text-decoration: underline;
+    }
+    #map { height: 65vh; width: 100%; }
+    #elevationChart { height: 30vh; }
+    .input-box {
+      display: flex;
+      justify-content: center;
+      margin: 10px;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    input {
+      padding: 8px;
+      width: 200px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+    button {
+      padding: 8px 15px;
+      background-color: #28a745;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #218838;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1><a href="https://sierramaps.ftp.sh" target="_blank">SierraMaps</a> ~ Route and Elevation Example</h1>
+
+  <div class="input-box">
+    <input id="apiKey" type="text" placeholder="Enter your API Key">
+    <input id="source" type="text" placeholder="Enter source address">
+    <input id="destination" type="text" placeholder="Enter destination address">
+    <button onclick="getElevationProfile()">Show Elevation</button>
+  </div>
+
+  <div id="map"></div>
+  <canvas id="elevationChart"></canvas>
+
+  <script>
+    const map = L.map('map').setView([20.5937, 78.9629], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const BASE_URL = "https://sierramaps.ftp.sh/api";
+    let routeLine;
+    const SAMPLE_COUNT = 20;
+
+    async function getElevationProfile() {
+      const API_KEY = document.getElementById('apiKey').value.trim();
+      const srcText = document.getElementById('source').value;
+      const dstText = document.getElementById('destination').value;
+
+      if (!API_KEY) return alert("Please enter your API key.");
+
+      const srcLoc = await geocode(srcText, API_KEY);
+      const dstLoc = await geocode(dstText, API_KEY);
+      if (!srcLoc || !dstLoc) return alert("Location not found.");
+
+      map.setView(srcLoc, 8);
+      if (routeLine) map.removeLayer(routeLine);
+
+      const routeRes = await fetch(`${BASE_URL}/route/${srcLoc.lat},${srcLoc.lng}/${dstLoc.lat},${dstLoc.lng}/1/?api_key=${API_KEY}`);
+      const routeData = await routeRes.json();
+
+      const path = routeData.resourceSet?.[0]?.resources?.[0]?.routePath?.line?.coordinates;
+      if (!path || path.length === 0) return alert("Route not found.");
+
+      const leafletPath = path.map(([lat, lng]) => [lat, lng]);
+      routeLine = L.polyline(leafletPath, { color: 'blue', weight: 4 }).addTo(map);
+      map.fitBounds(routeLine.getBounds());
+
+      const sampled = [];
+      const step = Math.floor(path.length / SAMPLE_COUNT);
+      for (let i = 0; i < path.length; i += step) {
+        sampled.push(path[i]);
+        if (sampled.length === SAMPLE_COUNT) break;
+      }
+
+      const pointParam = sampled.map(p => `${p[0]},${p[1]}`).join(',');
+      const elevationRes = await fetch(`${BASE_URL}/elevation/polyline/?points=${pointParam}&samples=${SAMPLE_COUNT}&heights=sealevel&api_key=${API_KEY}`);
+      const elevationData = await elevationRes.json();
+      const elevations = elevationData.resourceSet?.[0]?.resources?.[0]?.elevations;
+
+      if (!elevations || elevations.length === 0) return alert("Elevation data not found.");
+
+      const distance = [0];
+      for (let i = 1; i < sampled.length; i++) {
+        distance.push(distance[i - 1] + getDistance(
+          { lat: sampled[i - 1][0], lng: sampled[i - 1][1] },
+          { lat: sampled[i][0], lng: sampled[i][1] }
+        ));
+      }
+
+      drawElevationChart(distance, elevations);
+    }
+
+    async function geocode(address, apiKey) {
+      const res = await fetch(`${BASE_URL}/geocoding/${encodeURIComponent(address)}/?api_key=${apiKey}`);
+      const data = await res.json();
+      if (!data || !data.resourceSet || !Array.isArray(data.resourceSet) || data.resourceSet.length === 0) return null;
+
+      const first = data.resourceSet[0];
+      const lat = first.geo?.latitude || first.address?.geo?.latitude;
+      const lng = first.geo?.longitude || first.address?.geo?.longitude;
+
+      if (typeof lat !== "number" || typeof lng !== "number") return null;
+
+      return { lat: parseFloat(lat), lng: parseFloat(lng) };
+    }
+
+    function getDistance(a, b) {
+      const R = 6371;
+      const dLat = deg2rad(b.lat - a.lat);
+      const dLon = deg2rad(b.lng - a.lng);
+      const lat1 = deg2rad(a.lat);
+      const lat2 = deg2rad(b.lat);
+      const a_ = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+      return R * 2 * Math.atan2(Math.sqrt(a_), Math.sqrt(1 - a_));
+    }
+
+    function deg2rad(deg) {
+      return deg * (Math.PI / 180);
+    }
+
+    function drawElevationChart(xLabels, yValues) {
+      const ctx = document.getElementById('elevationChart').getContext('2d');
+      if (window.elevationChart instanceof Chart) {
+        window.elevationChart.destroy();
+      }
+
+      window.elevationChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: xLabels.map(d => d.toFixed(2) + ' km'),
+          datasets: [{
+            label: 'Elevation (m)',
+            data: yValues,
+            borderColor: 'green',
+            fill: true,
+            backgroundColor: 'rgba(0,128,0,0.2)',
+            pointRadius: 0,
+            tension: 0.3
+          }]
+        },
+        options: {
+          scales: {
+            x: {
+              title: { display: true, text: 'Distance' }
+            },
+            y: {
+              title: { display: true, text: 'Elevation (m)' }
+            }
+          },
+          plugins: {
+            legend: { display: false }
+          }
+        }
+      });
+    }
+  </script>
+
+</body>
+</html>
