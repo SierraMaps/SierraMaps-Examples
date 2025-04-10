@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SierraMaps ~ Nearby Places with Weather</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Bootstrap -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- Leaflet & Leaflet Draw -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+  <style>
+    #map { height: 60vh; width: 100%; margin-bottom: 20px; }
+    .place-card { margin-bottom: 15px; }
+  </style>
+</head>
+<body class="container py-3">
+
+  <h1><a href="https://sierramaps.ftp.sh" target="_blank">SierraMaps</a> ~ Nearby Places with Real-Time Weather</h1>
+
+  <div class="row my-3">
+    <div class="col-md-4">
+      <input id="apiKey" class="form-control" placeholder="Enter your API Key">
+    </div>
+    <div class="col-md-4">
+      <button class="btn btn-success" onclick="fetchPlaces()">Find Nearby Places</button>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="placesContainer" class="row"></div>
+<script>
+  const map = L.map('map').setView([37.78, -122.43], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: '© OpenStreetMap'
+  }).addTo(map);
+
+  let drawnItems = new L.FeatureGroup().addTo(map);
+  let markerLayer = new L.LayerGroup().addTo(map); // Layer for dynamic markers
+  let bbox = null;
+
+  const drawControl = new L.Control.Draw({
+    draw: {
+      polygon: false,
+      circle: false,
+      marker: false,
+      polyline: false,
+      circlemarker: false,
+      rectangle: {
+        shapeOptions: {
+          color: '#007bff'
+        }
+      }
+    },
+    edit: {
+      featureGroup: drawnItems,
+      edit: false,
+      remove: true
+    }
+  });
+  map.addControl(drawControl);
+
+  map.on('draw:created', function (e) {
+    drawnItems.clearLayers();
+    drawnItems.addLayer(e.layer);
+
+    const bounds = e.layer.getBounds();
+    bbox = {
+      south: bounds.getSouth(),
+      west: bounds.getWest(),
+      north: bounds.getNorth(),
+      east: bounds.getEast()
+    };
+  });
+
+  async function fetchPlaces() {
+    const apiKey = document.getElementById('apiKey').value.trim();
+    if (!apiKey) return alert("Enter API Key.");
+    if (!bbox) return alert("Draw a bounding box on the map first.");
+
+    const url = `https://sierramaps.ftp.sh/api/spatialdata/?south=${bbox.south}&west=${bbox.west}&north=${bbox.north}&east=${bbox.east}&top=15&api_key=${apiKey}`;
+    const res = await fetch(url);
+    const data = await res.json();
+
+    const places = data.resourceSet || [];
+    document.getElementById('placesContainer').innerHTML = '';
+    markerLayer.clearLayers(); // Clear previous markers
+
+    for (const place of places) {
+      const weather = await fetchWeather(place.Latitude, place.Longitude, apiKey);
+      showPlaceCard(place, weather);
+      addPlaceMarker(place, weather);
+    }
+  }
+
+  async function fetchWeather(lat, lng, apiKey) {
+    try {
+      const res = await fetch(`https://sierramaps.ftp.sh/api/weather/${lat}/${lng}/metric/?api_key=${apiKey}`);
+      const data = await res.json();
+      return data.weather_data?.current || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function showPlaceCard(place, weather) {
+    const icon = weather.weather?.[0]?.icon || "01d";
+    const temp = weather.temp ? `${weather.temp}°C` : "N/A";
+    const condition = weather.weather?.[0]?.description || "Unknown";
+
+    const card = `
+      <div class="col-md-4 place-card">
+        <div class="card">
+          <div class="card-body">
+            <h5 class="card-title">${place.DisplayName}</h5>
+            <p class="card-text">${place.AddressLine}, ${place.Locality}, ${place.AdminDistrict}</p>
+            <p class="mb-1"><strong>Phone:</strong> ${place.Phone || "N/A"}</p>
+            <p><strong>Weather:</strong> ${condition} <img src="https://openweathermap.org/img/wn/${icon}.png"> <strong>${temp}</strong></p>
+            <button class="btn btn-sm btn-outline-primary" onclick="map.setView([${place.Latitude}, ${place.Longitude}], 17)">View on Map</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.getElementById('placesContainer').insertAdjacentHTML('beforeend', card);
+  }
+
+  function addPlaceMarker(place, weather) {
+    const iconUrl = `https://openweathermap.org/img/wn/${weather.weather?.[0]?.icon || "01d"}.png`;
+    const popupContent = `
+      <strong>${place.DisplayName}</strong><br>
+      ${place.Locality}, ${place.AdminDistrict}<br>
+      <img src="${iconUrl}" style="width:24px; vertical-align:middle;"> ${weather.temp ? weather.temp + "°C" : "N/A"}
+    `;
+
+    const marker = L.marker([place.Latitude, place.Longitude])
+      .bindPopup(popupContent)
+      .addTo(markerLayer);
+  }
+</script>
+
+</body>
+</html>
